@@ -1,0 +1,189 @@
+#include <Servo.h>
+
+Servo plateServo;
+
+// ===== PINNER =====
+const int trigPin   = 7;
+const int echoPin   = 8;
+const int servoPin  = 9;
+const int buttonPin = 2;
+
+const int kpPin = A0;
+const int kiPin = A1;
+const int kdPin = A2;
+const int spPin = A3;
+
+// ===== SYSTEM =====
+bool running = false;
+bool lastButtonState = HIGH;
+
+// ===== PID =====
+float Kp = 0.0;
+float Ki = 0.0;
+float Kd = 0.0;
+float setpoint = 20.0;
+
+// ===== VARIABLER =====
+float measured = 0.0;
+float error = 0.0;
+float previousError = 0.0;
+float integral = 0.0;
+float derivative = 0.0;
+float output = 0.0;
+
+// ===== SERVO =====
+int servoCenter = 35;
+int servoMin = 0;
+int servoMax = 90;
+
+float currentAngle = 35.0;
+float targetAngle = 35.0;
+float smoothing = 0.2;
+
+unsigned long previousTime = 0;
+unsigned long lastPrintTime = 0;
+
+void setup() {
+  Serial.begin(9600);
+  delay(1000);
+
+  pinMode(trigPin, OUTPUT);
+  pinMode(echoPin, INPUT);
+  pinMode(buttonPin, INPUT_PULLUP);
+
+  plateServo.attach(servoPin);
+  plateServo.write(servoCenter);
+
+  currentAngle = servoCenter;
+  targetAngle = servoCenter;
+
+  Serial.println("PID system (setpoint 0-65 cm)");
+}
+
+void loop() {
+
+  // ===== LES TRIMMERE =====
+  int kpRaw = analogRead(kpPin);
+  int kiRaw = analogRead(kiPin);
+  int kdRaw = analogRead(kdPin);
+  int spRaw = analogRead(spPin);
+
+  Kp = kpRaw / 1023.0 * 10.0;
+  Ki = kiRaw / 1023.0 * 5.0;
+  Kd = kdRaw / 1023.0 * 5.0;
+
+  setpoint = spRaw / 1023.0 * 65.0;
+
+  // ===== KNAPP =====
+  bool buttonState = digitalRead(buttonPin);
+
+  if (buttonState == LOW && lastButtonState == HIGH) {
+    running = !running;
+
+    if (running) {
+      Serial.println("START");
+      integral = 0;
+      previousError = 0;
+      previousTime = millis();
+    } else {
+      Serial.println("STOPP");
+
+      integral = 0;
+      previousError = 0;
+
+      currentAngle = servoCenter;
+      targetAngle = servoCenter;
+      plateServo.write((int)currentAngle);
+
+      Serial.print("Servo stoppet på vinkel: ");
+      Serial.println((int)currentAngle);
+    }
+
+    delay(200);
+  }
+
+  lastButtonState = buttonState;
+
+  if (!running) return;
+
+  // ===== SENSOR =====
+  float m1 = readDistanceCM();
+  float m2 = readDistanceCM();
+  float m3 = readDistanceCM();
+
+ // if (m1 <= 0 || m2 <= 0 || m3 <= 0) return;
+
+  measured = (m1 + m2 + m3) / 3.0;
+
+  //if (measured > 70) return;
+
+  // ===== TID =====
+  unsigned long currentTime = millis();
+  float dt = (currentTime - previousTime) / 1000.0;
+  if (dt <= 0) return;
+
+  // ===== PID =====
+  error = setpoint - measured;
+  integral += error * dt;
+  derivative = (error - previousError) / dt;
+
+  integral = constrain(integral, -20, 20);
+
+  output = Kp * error + Ki * integral + Kd * derivative;
+  output = constrain(output, -50, 50);
+
+  // ===== SERVO =====
+  targetAngle = servoCenter + output;
+  targetAngle = constrain(targetAngle, servoMin, servoMax);
+
+  currentAngle += smoothing * (targetAngle - currentAngle);
+
+  plateServo.write((int)currentAngle);
+
+  previousError = error;
+  previousTime = currentTime;
+
+  // ===== DEBUG / SERIAL MONITOR =====
+  if (millis() - lastPrintTime > 200) {
+    Serial.print("SP:");
+    Serial.print(setpoint, 1);
+
+    Serial.print("  PV:");
+    Serial.print(measured, 1);
+
+    Serial.print("  Kp:");
+    Serial.print(Kp, 2);
+
+    Serial.print("  Ki:");
+    Serial.print(Ki, 2);
+
+    Serial.print("  Kd:");
+    Serial.print(Kd, 2);
+
+    Serial.print("  Target:");
+    Serial.print(targetAngle, 1);
+
+    Serial.print("  Servo:");
+    Serial.println(currentAngle, 1);
+
+    lastPrintTime = millis();
+  }
+
+  delay(20);
+}
+
+// ===== SENSOR =====
+float readDistanceCM() {
+  digitalWrite(trigPin, LOW);
+  delayMicroseconds(3);
+
+  digitalWrite(trigPin, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(trigPin, LOW);
+
+  long duration = pulseIn(echoPin, HIGH, 30000);
+
+  if (duration == 0) return -1;
+
+  return duration * 0.0343 / 2.0;
+}
